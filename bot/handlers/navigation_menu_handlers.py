@@ -496,7 +496,9 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
     # блок включённых модулей
     incl = template.get("included", [])
     if incl:
-        incl_lines = [f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']}" for m in incl]
+        incl_lines = [
+            f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']} — {MODULES[m]['price']} ₽" for m in incl
+        ]
         included_block = "\n".join(incl_lines)
     else:
         included_block = "—"
