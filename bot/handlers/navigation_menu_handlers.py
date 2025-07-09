@@ -3,6 +3,7 @@ from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from urllib.parse import quote
 
 from config import settings
 from keyboards.navigation_menu_keyboard import get_navigation_menu
@@ -12,6 +13,7 @@ from keyboards.cost_calculator_keyboard import (
     get_support_keyboard,
     get_contact_keyboard,
     get_simple_contact_keyboard,
+    get_category_keyboard,
 )
 from states.cost_calculator_states import CostCalculatorStates as States
 from states.need_bot_game_states import NeedBotGameStates as NBStates
@@ -23,12 +25,22 @@ from services.cost_calculator_service import (
 )
 
 from database.user_repo import get_coupon, set_coupon
+from database.calc_repo import get_session, upsert_session, drop_session
 
 # Иконки для модулей
 MODULE_EMOJIS = {
-    "payments": "💳",   # Оплата
-    "admin": "🛠️",     # Админ-панель
-    "multilang": "🌐",  # Мультиязык
+    "calendar": "🗓️",
+    "payments": "💳",
+    "portfolio": "🖼️",
+    "mailing": "📧",
+    "loyalty": "🎁",
+    "analytics": "📊",
+    "crm": "📋",
+    "documents": "📄",
+    "webapp": "🌐",
+    "webapp_shop": "🛒",
+    "quest": "🎲",
+    "admin_panel": "🛠️",
 }
 
 router = Router()
@@ -64,38 +76,87 @@ BUTTON_TITLES = {
     "back_menu": "возврат в меню",
     "back_template": "назад к выбору шаблона",
     "back_modules": "назад к модулям",
+    "unique_solution": "уникальное решение",
 }
+
+# ---------------------------------------------------------------------------
+# Утилиты: логирование и безопасное редактирование сообщений
+# ---------------------------------------------------------------------------
 
 
 def log_button(callback: types.CallbackQuery, preview_text: str) -> None:
-    """Логирует кнопку и первые строки ответа, сохраняя переносы."""
-    username = f"@{callback.from_user.username}" if callback.from_user.username else callback.from_user.full_name
+    """Логирует нажатую кнопку и первые строки ответа."""
+    username = (
+        f"@{callback.from_user.username}"
+        if callback.from_user.username
+        else callback.from_user.full_name
+    )
     title = BUTTON_TITLES.get(callback.data, callback.data)
 
-    # Формируем превью для логов так, чтобы в него обязательно вошла строка с итоговой стоимостью.
+    # Превью ограничиваем, но стараемся захватить строку с итоговой стоимостью
     lines = preview_text.split("\n")
     preview_lines = []
     for line in lines:
         preview_lines.append(line)
         if "Итоговая стоимость" in line:
-            break  # Дошли до цены — можно остановиться
-        if len(preview_lines) >= 25:  # Защита от очень длинных сообщений
+            break
+        if len(preview_lines) >= 25:
             break
     preview = "\n".join(preview_lines).strip()
 
     logging.info("%s -> %s | %s", username, title, preview)
 
 
-async def safe_edit(message: types.Message, *, text: str, reply_markup=None, parse_mode=None):
-    """Edit message и залогировать первые 5 слов ответа.
-
-    Игнорирует ошибку «message is not modified»."""
+async def safe_edit(
+    message: types.Message,
+    *,
+    text: str,
+    reply_markup=None,
+    parse_mode: str | None = None,
+) -> None:
+    """Безопасный edit_text. Игнорируем «message is not modified»."""
     try:
         await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc):
-            return  # Ничего не меняем
+            return
         raise
+
+# ---------------------------------------------------------------------------
+# Уникальное решение — сразу контакт (регистрируем рано, без state, чтобы перехватить первым)
+# ---------------------------------------------------------------------------
+
+
+@router.callback_query(lambda c: c.data == "unique_solution")
+async def unique_solution_contact(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Сразу открывает ЛС с заполненным текстом — без промежуточного сообщения."""
+
+    await state.clear()
+    await drop_session(callback.from_user.id)
+
+    coupon_code = await get_coupon(callback.from_user.id)
+    # Формируем собственный URL с текстом «уникальное решение»
+    lines = [
+        "Приветствую!",
+        "",
+        "Хочу обсудить создание уникального Telegram-бота",
+    ]
+    if coupon_code:
+        lines.append(f"Купон: {coupon_code}")
+    message_text = "\n".join(lines)
+    url = f"https://t.me/{settings.owner_username}?text=" + quote(message_text)
+
+    # Показываем кнопку с ссылкой (надёжно, без ошибки URL_INVALID)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Написать мне", url=url)],
+            [InlineKeyboardButton(text="↩️ Вернуться в меню", callback_data="back_menu")],
+        ]
+    )
+    await safe_edit(callback.message, text="Нажмите кнопку ниже, чтобы обсудить создание уникального Telegram-бота.", reply_markup=keyboard)
+    log_button(callback, "unique_solution")
+    await callback.answer()
+
 
 # ---------------------------------------------------------------------------
 # Интерактив-викторина «Зачем нужен бот?»
@@ -253,14 +314,59 @@ async def show_examples(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(lambda c: c.data == "calc_cost")
 async def start_calculator(callback: types.CallbackQuery, state: FSMContext) -> None:
+    # persist session
+    await upsert_session(callback.from_user.id, step=1)
     await state.clear()
-    await state.set_state(States.choose_template)
+    await state.set_state(States.choose_category)
     await callback.message.edit_text(
-        "Шаг 1/3. Выберите подходящий шаблон бота:",
-        reply_markup=get_template_keyboard(),
+        "Шаг 1/4. Выберите вашу сферу деятельности:",
+        reply_markup=get_category_keyboard(),
     )
     await callback.answer()
-    log_button(callback, "Шаг 1/3. Выберите подходящий шаблон бота:")
+    log_button(callback, "Шаг 1/4. Выберите категорию")
+
+# ---------------------------------------------------------------------------
+# Назад из первого шага калькулятора в главное меню
+# ---------------------------------------------------------------------------
+
+# Этот обработчик нужно разместить ДО category_chosen, чтобы иметь больший приоритет
+@router.callback_query(States.choose_category, lambda c: c.data == "back_menu")
+async def category_back_menu_prior(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await calc_back_menu(callback, state)
+
+# ------------------ category selection -----------------
+
+
+@router.callback_query(States.choose_category)
+async def category_chosen(callback: types.CallbackQuery, state: FSMContext) -> None:
+    category_key = callback.data
+    # basic validation
+    valid_categories = {"services", "courses", "shop", "events", "all"}
+    if category_key not in valid_categories:
+        await callback.answer("Используйте кнопки", show_alert=True)
+        return
+    await state.update_data(category=category_key)
+    await upsert_session(callback.from_user.id, category=category_key, step=2)
+    await state.set_state(States.choose_template)
+    await safe_edit(
+        callback.message,
+        text="Шаг 2/4. Выберите шаблон:",
+        reply_markup=get_template_keyboard(category_key),
+    )
+    log_button(callback, f"выбрана категория {category_key}")
+    await callback.answer()
+
+# назад к выбору категории
+@router.callback_query(States.choose_template, lambda c: c.data == "back_category")
+async def back_to_category(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(States.choose_category)
+    await safe_edit(
+        callback.message,
+        text="Шаг 1/4. Выберите вашу сферу деятельности:",
+        reply_markup=get_category_keyboard(),
+    )
+    await callback.answer()
+    log_button(callback, "назад к категориям")
 
 # ---------------------------------------------------------------------------
 # Back navigation handlers
@@ -270,6 +376,7 @@ async def start_calculator(callback: types.CallbackQuery, state: FSMContext) -> 
 @router.callback_query(lambda c: c.data == "back_menu")
 async def calc_back_menu(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
+    await drop_session(callback.from_user.id)
     await safe_edit(callback.message, text="Выберите нужный пункт меню:", reply_markup=get_navigation_menu(await get_coupon(callback.from_user.id)))
     log_button(callback, "возврат в меню")
     await callback.answer()
@@ -278,8 +385,13 @@ async def calc_back_menu(callback: types.CallbackQuery, state: FSMContext) -> No
 @router.callback_query(States.choose_modules, lambda c: c.data == "back_template")
 async def back_to_template(callback: types.CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    category_key = data.get("category", "all")
     await state.set_state(States.choose_template)
-    await safe_edit(callback.message, text="Шаг 1/3. Выберите подходящий шаблон бота:", reply_markup=get_template_keyboard())
+    await safe_edit(
+        callback.message,
+        text="Шаг 2/4. Выберите шаблон:",
+        reply_markup=get_template_keyboard(category_key),
+    )
     log_button(callback, "назад к выбору шаблона")
     await callback.answer()
 
@@ -288,26 +400,37 @@ async def back_to_template(callback: types.CallbackQuery, state: FSMContext) -> 
 async def back_to_modules(callback: types.CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     selected = data.get("modules", [])
+    template_key = data.get("template")
+    tpl = COST_TEMPLATES[template_key]
+    included = tpl.get("included", [])
+
+    # сформировать текст карточки, как в show_template_card
+    lines = [
+        f"📦 {tpl['name']} — <b>{tpl['base_price']} ₽</b>",
+        tpl["description"],
+        "",
+        "<b>Уже входит:</b>",
+    ]
+    if included:
+        for m in included:
+            mod = MODULES[m]
+            lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {mod['name']} — {mod['price']} ₽")
+    else:
+        lines.append("—")
+
+    lines.extend(["", "<i>Выберите доп модули с помощью кнопок ниже:</i>"])
+
+    card_text = "\n".join(lines)
     await state.set_state(States.choose_modules)
-    await safe_edit(callback.message, text="Шаг 2/3. Выберите необходимые модули (можно несколько):", reply_markup=get_modules_keyboard(selected=selected))
+    await safe_edit(
+        callback.message,
+        text=card_text,
+        reply_markup=get_modules_keyboard(selected=selected, template_key=template_key),
+        parse_mode="HTML",
+    )
     log_button(callback, "назад к модулям")
     await callback.answer()
-
-@router.callback_query(States.choose_template)
-async def template_chosen(callback: types.CallbackQuery, state: FSMContext) -> None:
-    template_key = callback.data
-    if template_key not in COST_TEMPLATES:
-        await callback.answer("Используйте кнопки", show_alert=True)
-        return
-    await state.update_data(template=template_key, modules=[])
-    await state.set_state(States.choose_modules)
-    tpl = COST_TEMPLATES[template_key]
-    log_button(callback, f"🏷️ Шаблон выбран: {tpl['name']} — {tpl['base_price']} ₽")
-    await callback.message.edit_text(
-        "Шаг 2/3. Выберите необходимые модули (можно несколько):",
-        reply_markup=get_modules_keyboard(selected=[]),
-    )
-    await callback.answer()
+#旧 обработчик выбора шаблона отключён (конфликтовал с новой карточкой)
 
 @router.callback_query(States.choose_modules)
 async def modules_choose(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -318,13 +441,16 @@ async def modules_choose(callback: types.CallbackQuery, state: FSMContext) -> No
         await state.set_state(States.choose_support)
         await safe_edit(
             callback.message,
-            text="Шаг 3/3. Выберите пакет поддержки:",
+            text="Шаг 4/4. Выберите пакет поддержки (техническая поддержка, обновления и чат по вопросам):",
             reply_markup=get_support_keyboard(),
         )
         await callback.answer()
-        log_button(callback, "Шаг 3/3. Выберите пакет поддержки:")
+        log_button(callback, "Шаг 4/4. Выберите пакет поддержки:")
         return
-    if callback.data not in MODULES:
+    template_key = data.get("template")
+    allowed_keys = [k for k in MODULES if k not in COST_TEMPLATES[template_key]["included"]]
+
+    if callback.data not in allowed_keys:
         await callback.answer("Используйте кнопки", show_alert=True)
         return
     action = "добавлен"
@@ -339,7 +465,7 @@ async def modules_choose(callback: types.CallbackQuery, state: FSMContext) -> No
         sign = "➕" if action == "добавлен" else "➖"
         log_button(callback, f"🔧 {sign} {module['name']} ({module['price']} ₽)")
     await state.update_data(modules=selected)
-    await callback.message.edit_reply_markup(reply_markup=get_modules_keyboard(selected=selected))
+    await callback.message.edit_reply_markup(reply_markup=get_modules_keyboard(selected=selected, template_key=template_key))
     await callback.answer()
 
 @router.callback_query(States.choose_support)
@@ -365,7 +491,15 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
 
     template_key = data["template"]
     template = COST_TEMPLATES[template_key]
-    template_line = f"🗂️ Шаблон: {template['name']} — {template['base_price']} ₽"
+    template_line = f"Шаблон: <i>{template['name']}</i> — <b>{template['base_price']} ₽</b>"
+
+    # блок включённых модулей
+    incl = template.get("included", [])
+    if incl:
+        incl_lines = [f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']}" for m in incl]
+        included_block = "\n".join(incl_lines)
+    else:
+        included_block = "—"
 
     if data["modules"]:
         modules_lines = [
@@ -376,34 +510,38 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
         modules_block = "-"
 
     support = SUPPORT_PACKAGES[data["support"]]
-    support_line = f"🤝 Пакет поддержки: {support['name']} (+{support['price']} ₽)"
+    support_line_html = f"🤝 Пакет поддержки: <b>{support['name']}</b> (+{support['price']} ₽)"
+    support_line_plain = f"🤝 Пакет поддержки: {support['name']} (+{support['price']} ₽)"
 
     summary_lines = [
-        "Ваш выбор:",
-        "",
+        "<b>Ваш выбор:</b>",
         "",
         f"{template_line}",
+        "<b>(входит):</b>",
+        f"{included_block}",
         "",
-        f"Модули:",
+        "<b>Модули:</b>",
         f"{modules_block}",
         "",
-        f"{support_line}",
+        f"{support_line_html}",
     ]
 
     if discount:
-        summary_lines.extend(["", f"Скидка по купону BOT5: -{discount} ₽"])
+        summary_lines.extend(["", f"Скидка по купону <i>{coupon_code}</i>: <b>-{discount} ₽</b>"])
 
-    summary_lines.extend(["", "", f"💰 Итоговая стоимость: *{total_after} ₽*"])
+    summary_lines.extend(["", "", f"💰 Итоговая стоимость: <b>{total_after} ₽</b>"])
 
     summary = "\n".join(summary_lines)
     await safe_edit(
         callback.message,
         text=summary,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=get_contact_keyboard(
             owner_username=settings.owner_username,
             template=f"{template['name']} — {template['base_price']} ₽",
+            included=included_block,
             modules=modules_block,
+            support_line=support_line_plain,
             total=total_after,
             coupon_code=coupon_code if discount else None,
             discount=discount,
@@ -421,4 +559,68 @@ async def contact_me(callback: types.CallbackQuery) -> None:
     keyboard = get_simple_contact_keyboard(owner_username=settings.owner_username, coupon_code=coupon_code)
     await safe_edit(callback.message, text="Нажмите кнопку ниже, чтобы связаться с автором.", reply_markup=keyboard)
     log_button(callback, "contact_me")
+    await callback.answer()
+
+# template list -> show card
+@router.callback_query(States.choose_template, lambda c: c.data.startswith("tpl_") and not c.data.startswith("tpl_ok_"))
+async def show_template_card(callback: types.CallbackQuery, state: FSMContext) -> None:
+    template_key = callback.data.split("tpl_")[1]
+    tpl = COST_TEMPLATES[template_key]
+    included = tpl.get("included", [])
+
+    # формируем текст карточки
+    lines = [
+        f"📦 {tpl['name']} — <b>{tpl['base_price']} ₽</b>",
+        tpl["description"],
+        "",
+        "<b>Уже входит:</b>",
+    ]
+    if included:
+        for m in included:
+            mod = MODULES[m]
+            lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {mod['name']} — {mod['price']} ₽")
+    else:
+        lines.append("—")
+
+    # Подсказка перед кнопками модулей
+    lines.extend(["", "<i>Выберите доп модули с помощью кнопок ниже:</i>"])
+
+    text = "\n".join(lines)
+
+    # Сохраняем выбор шаблона и переходим в шаг выбора модулей (объединённый экран)
+    await state.update_data(template=template_key, modules=[])
+    await state.set_state(States.choose_modules)
+
+    await safe_edit(
+        callback.message,
+        text=text,
+        reply_markup=get_modules_keyboard(selected=[], template_key=template_key),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# confirm template — больше не используется, но оставляем для обратной совместимости
+@router.callback_query(States.choose_template, lambda c: c.data.startswith("tpl_ok_"))
+async def template_selected_confirm(callback: types.CallbackQuery, state: FSMContext) -> None:
+    # просто перенаправляем на card-поток, чтобы не ломать старые сообщения
+    new_cb = types.CallbackQuery(
+        id=callback.id,
+        from_user=callback.from_user,
+        chat_instance=callback.chat_instance,
+        message=callback.message,
+        data=f"tpl_{callback.data.split('tpl_ok_')[1]}",
+    )
+    await show_template_card(new_cb, state)
+
+# back_templates list
+@router.callback_query(States.choose_template, lambda c: c.data == "back_templates")
+async def back_templates(callback: types.CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    category = data.get("category", "all")
+    await safe_edit(
+        callback.message,
+        text="Шаг 2/4. Выберите шаблон:",
+        reply_markup=get_template_keyboard(category),
+    )
     await callback.answer()
