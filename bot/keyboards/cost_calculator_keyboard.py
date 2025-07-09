@@ -1,5 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from typing import List
+from typing import List, Optional
 from urllib.parse import quote
 
 from services.cost_calculator_service import COST_TEMPLATES, MODULES, SUPPORT_PACKAGES
@@ -9,6 +9,7 @@ __all__ = [
     "get_modules_keyboard",
     "get_support_keyboard",
     "get_contact_keyboard",
+    "get_simple_contact_keyboard",
 ]
 
 def get_template_keyboard() -> InlineKeyboardMarkup:
@@ -34,24 +35,51 @@ def get_modules_keyboard(selected: List[str]) -> InlineKeyboardMarkup:
 
 def get_support_keyboard() -> InlineKeyboardMarkup:
     inline = [
-        [InlineKeyboardButton(text=f"{pkg['name']} (+{int(pkg['multiplier']*100)}%)", callback_data=key)]
+        [InlineKeyboardButton(text=f"{pkg['name']} (+{pkg['price']} ₽)", callback_data=key)]
         for key, pkg in SUPPORT_PACKAGES.items()
     ]
     inline.append([InlineKeyboardButton(text="↩️ Назад", callback_data="back_modules")])
     return InlineKeyboardMarkup(inline_keyboard=inline)
 
-def get_contact_keyboard(*, owner_username: str, template: str, modules: str, total: int) -> InlineKeyboardMarkup:
-    message = (
-        f"Приветствую! Заинтересовало создание Telegram-бота.\n"
-        f"Шаблон: {template}\n"
-        f"Модули: {modules or '-'}\n"
-        f"Общая стоимость: {total} ₽.\n"
-        f"Хотелось бы обсудить детали сотрудничества."
-    )
+def get_contact_keyboard(*, owner_username: str, template: str, modules: str, total: int, coupon_code: Optional[str] = None, discount: int = 0) -> InlineKeyboardMarkup:
+    modules_text = modules or "-"
+    lines = [
+        "Приветствую!",
+        "",
+        "Заинтересовало создание Telegram-бота:",
+        "",
+        f"Шаблон: {template}",
+        "Модули:",
+        f"{modules_text}",
+        "",
+        f"Общая стоимость: {total} ₽.",
+    ]
+    if coupon_code:
+        lines.append(f"Купон: {coupon_code} (скидка −{discount} ₽)")
+    lines.extend(["", "Хотелось бы обсудить детали сотрудничества."])
+    message = "\n".join(lines)
     url = f"https://t.me/{owner_username}?text=" + quote(message)
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✉️ Написать в личку", url=url)],
+            [InlineKeyboardButton(text="✉️ Написать мне", url=url)],
+            [InlineKeyboardButton(text="↩️ Вернуться в меню", callback_data="back_menu")],
+        ]
+    )
+
+def get_simple_contact_keyboard(*, owner_username: str, coupon_code: Optional[str] = None) -> InlineKeyboardMarkup:
+    """Кнопка «Написать мне» с коротким, необязательным купоном."""
+    lines = [
+        "Приветствую!",
+        "",
+        "Хочу обсудить создание Telegram-бота",
+    ]
+    if coupon_code:
+        lines.append(f"Купон: {coupon_code}")
+    message = "\n".join(lines)
+    url = f"https://t.me/{owner_username}?text=" + quote(message)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Написать мне", url=url)],
             [InlineKeyboardButton(text="↩️ Вернуться в меню", callback_data="back_menu")],
         ]
     ) 
