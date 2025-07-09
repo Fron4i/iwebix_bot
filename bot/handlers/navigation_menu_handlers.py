@@ -5,6 +5,14 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from urllib.parse import quote
 
+# ---------------------------------------------------------------------------
+# Утилита форматирования цены
+# ---------------------------------------------------------------------------
+
+
+def _fmt_price(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
+
 from config import settings
 from keyboards.navigation_menu_keyboard import get_navigation_menu
 from keyboards.cost_calculator_keyboard import (
@@ -34,13 +42,13 @@ MODULE_EMOJIS = {
     "portfolio": "🖼️",
     "mailing": "📧",
     "loyalty": "🎁",
-    "analytics": "📊",
     "crm": "📋",
     "documents": "📄",
     "webapp": "🌐",
     "webapp_shop": "🛒",
     "quest": "🎲",
     "admin_panel": "🛠️",
+    "booking": "📆",
 }
 
 router = Router()
@@ -65,12 +73,12 @@ BUTTON_TITLES = {
     "creative": "шаблон творческая",
     "photo": "шаблон фото",
     "wellness": "шаблон wellness",
+    "coursebot": "шаблон курс-бот",
     "calendar": "модуль календарь",
     "payments": "модуль оплата",
     "portfolio": "модуль портфолио",
     "mailing": "модуль рассылки",
     "loyalty": "модуль лояльность",
-    "analytics": "модуль аналитика",
     "crm": "модуль CRM",
     "documents": "модуль договоры",
     "back_menu": "возврат в меню",
@@ -341,17 +349,37 @@ async def category_back_menu_prior(callback: types.CallbackQuery, state: FSMCont
 async def category_chosen(callback: types.CallbackQuery, state: FSMContext) -> None:
     category_key = callback.data
     # basic validation
-    valid_categories = {"services", "courses", "shop", "events", "all"}
+    valid_categories = {"services", "sales", "builder", "all"}
     if category_key not in valid_categories:
         await callback.answer("Используйте кнопки", show_alert=True)
         return
     await state.update_data(category=category_key)
     await upsert_session(callback.from_user.id, category=category_key, step=2)
     await state.set_state(States.choose_template)
+    message_text = "Шаг 2/4. Выберите шаблон:"
+    if category_key == "builder":
+        # сразу переходим к выбору модулей
+        await state.update_data(template="builder", modules=[])
+        await state.set_state(States.choose_modules)
+        modules_intro = (
+            "Шаг 2/3. Выберите необходимые модули (можно несколько):\n"
+            "<i>* Стоимость модулей включает надбавку 20 % и округлена до 1 000 ₽</i>"
+        )
+        await safe_edit(
+            callback.message,
+            text=modules_intro,
+            reply_markup=get_modules_keyboard(selected=[], template_key="builder"),
+            parse_mode="HTML",
+        )
+        log_button(callback, "builder_modules")
+        await callback.answer()
+        return
+
     await safe_edit(
         callback.message,
-        text="Шаг 2/4. Выберите шаблон:",
+        text=message_text,
         reply_markup=get_template_keyboard(category_key),
+        parse_mode="HTML",
     )
     log_button(callback, f"выбрана категория {category_key}")
     await callback.answer()
@@ -406,7 +434,7 @@ async def back_to_modules(callback: types.CallbackQuery, state: FSMContext) -> N
 
     # сформировать текст карточки, как в show_template_card
     lines = [
-        f"📦 {tpl['name']} — <b>{tpl['base_price']} ₽</b>",
+        f"🗂 {tpl['name']} — <b>{_fmt_price(tpl['base_price'])} ₽</b>",
         tpl["description"],
         "",
         "<b>Уже входит:</b>",
@@ -414,7 +442,7 @@ async def back_to_modules(callback: types.CallbackQuery, state: FSMContext) -> N
     if included:
         for m in included:
             mod = MODULES[m]
-            lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {mod['name']} — {mod['price']} ₽")
+            lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {mod['name']} — {_fmt_price(mod['price'])} ₽")
     else:
         lines.append("—")
 
@@ -439,16 +467,28 @@ async def modules_choose(callback: types.CallbackQuery, state: FSMContext) -> No
 
     if callback.data == "done_modules":
         await state.set_state(States.choose_support)
+        support_intro = (
+            "Шаг 4/4. Выберите пакет технической поддержки:\n\n"
+            "🔄 Обновления контента по запросу\n"
+            "🛡️ Гарантия стабильной работы\n"
+            "💬 Консультация и ответы на вопросы"
+        )
         await safe_edit(
             callback.message,
-            text="Шаг 4/4. Выберите пакет поддержки (техническая поддержка, обновления и чат по вопросам):",
+            text=support_intro,
             reply_markup=get_support_keyboard(),
         )
         await callback.answer()
         log_button(callback, "Шаг 4/4. Выберите пакет поддержки:")
         return
     template_key = data.get("template")
-    allowed_keys = [k for k in MODULES if k not in COST_TEMPLATES[template_key]["included"]]
+    base_allowed = [k for k in MODULES if k not in COST_TEMPLATES[template_key]["included"]]
+    if template_key == "builder":
+        allowed_keys = base_allowed
+    elif template_key == "infobot":
+        allowed_keys = [k for k in base_allowed if k in {"calendar", "mailing", "webapp", "admin_panel", "booking"}]
+    else:
+        allowed_keys = [k for k in base_allowed if k != "webapp_shop"]
 
     if callback.data not in allowed_keys:
         await callback.answer("Используйте кнопки", show_alert=True)
@@ -475,11 +515,15 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
         return
     await state.update_data(support=callback.data)
     data = await state.get_data()
-    total = calculate_total(
-        template_key=data["template"],
-        module_keys=data["modules"],
-        support_key=data["support"],
-    )
+    if data["template"] == "builder":
+        mod_total = sum((((MODULES[m]["price"] * 1.2 + 999) // 1000) * 1000) for m in data["modules"])
+        total = mod_total + SUPPORT_PACKAGES[data["support"]]["price"]
+    else:
+        total = calculate_total(
+            template_key=data["template"],
+            module_keys=data["modules"],
+            support_key=data["support"],
+        )
 
     coupon_code = await get_coupon(callback.from_user.id)
     if coupon_code == "BOT5":
@@ -491,29 +535,33 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
 
     template_key = data["template"]
     template = COST_TEMPLATES[template_key]
-    template_line = f"Шаблон: <i>{template['name']}</i> — <b>{template['base_price']} ₽</b>"
+    template_line = f"Шаблон: <i>{template['name']}</i> — <b>{_fmt_price(template['base_price'])} ₽</b>"
 
     # блок включённых модулей
     incl = template.get("included", [])
     if incl:
         incl_lines = [
-            f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']} — {MODULES[m]['price']} ₽" for m in incl
+            f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']} — {_fmt_price(MODULES[m]['price'])} ₽" for m in incl
         ]
         included_block = "\n".join(incl_lines)
     else:
         included_block = "—"
 
     if data["modules"]:
-        modules_lines = [
-            f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']} — {MODULES[m]['price']} ₽" for m in data["modules"]
-        ]
+        modules_lines = []
+        for m in data["modules"]:
+            price = MODULES[m]["price"]
+            if data.get("template") == "builder":
+                price = ((int(price * 1.2 + 999)) // 1000) * 1000
+            modules_lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']} — {_fmt_price(price)} ₽")
         modules_block = "\n".join(modules_lines)
     else:
         modules_block = "-"
 
     support = SUPPORT_PACKAGES[data["support"]]
-    support_line_html = f"🤝 Пакет поддержки: <b>{support['name']}</b> (+{support['price']} ₽)"
-    support_line_plain = f"🤝 Пакет поддержки: {support['name']} (+{support['price']} ₽)"
+    package_price = _fmt_price(support['price'])
+    support_line_html = f"🤝 Пакет поддержки: <b>{support['name']}</b> (+{package_price} ₽)"
+    support_line_plain = f"🤝 Пакет поддержки: {support['name']} (+{package_price} ₽)"
 
     summary_lines = [
         "<b>Ваш выбор:</b>",
@@ -531,7 +579,7 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
     if discount:
         summary_lines.extend(["", f"Скидка по купону <i>{coupon_code}</i>: <b>-{discount} ₽</b>"])
 
-    summary_lines.extend(["", "", f"💰 Итоговая стоимость: <b>{total_after} ₽</b>"])
+    summary_lines.extend(["", "", f"💰 Итоговая стоимость: <b>{_fmt_price(total_after)} ₽</b>"])
 
     summary = "\n".join(summary_lines)
     await safe_edit(
@@ -572,7 +620,7 @@ async def show_template_card(callback: types.CallbackQuery, state: FSMContext) -
 
     # формируем текст карточки
     lines = [
-        f"📦 {tpl['name']} — <b>{tpl['base_price']} ₽</b>",
+        f"🗂 {tpl['name']} — <b>{_fmt_price(tpl['base_price'])} ₽</b>",
         tpl["description"],
         "",
         "<b>Уже входит:</b>",
@@ -580,7 +628,7 @@ async def show_template_card(callback: types.CallbackQuery, state: FSMContext) -
     if included:
         for m in included:
             mod = MODULES[m]
-            lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {mod['name']} — {mod['price']} ₽")
+            lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {mod['name']} — {_fmt_price(mod['price'])} ₽")
     else:
         lines.append("—")
 
