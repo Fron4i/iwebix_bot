@@ -1,9 +1,11 @@
 import logging
 from aiogram import Router, types
+import asyncio
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, InputMediaVideo
 from urllib.parse import quote
+from typing import Dict, List
 
 # ---------------------------------------------------------------------------
 # Утилита форматирования цены
@@ -22,6 +24,10 @@ from keyboards.cost_calculator_keyboard import (
     get_contact_keyboard,
     get_simple_contact_keyboard,
     get_category_keyboard,
+)
+from keyboards.examples_keyboard import (
+    get_examples_keyboard,
+    get_case_keyboard,
 )
 from states.cost_calculator_states import CostCalculatorStates as States
 from states.need_bot_game_states import NeedBotGameStates as NBStates
@@ -50,6 +56,9 @@ MODULE_EMOJIS = {
     "admin_panel": "🛠️",
     "booking": "📆",
 }
+
+# Хранилище сообщений медиа по пользователю
+case_media_store: Dict[int, List[types.Message]] = {}
 
 router = Router()
 
@@ -306,18 +315,144 @@ async def need_bot_coupon(callback: types.CallbackQuery, state: FSMContext) -> N
 
 @router.callback_query(lambda c: c.data == "examples")
 async def show_examples(callback: types.CallbackQuery) -> None:
+    """Показывает список демонстрационных кейсов в одном сообщении с кнопками."""
+    # Удаляем ранее отправленные медиа
+    media_messages = case_media_store.get(callback.from_user.id, [])
+    for msg in media_messages:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+    case_media_store[callback.from_user.id] = []
     text = (
-        "Ниже несколько демонстрационных проектов. Откройте любой бот и протестируйте "
-        "его функциональность. В админ-панели сразу появятся результаты ваших действий."
+        "Ниже несколько демонстрационных проектов. Выберите интересующий кейс, "
+        "чтобы увидеть подробности, фотографии/видео и ссылку на демо-бота."
     )
-    await safe_edit(callback.message, text=text)
+    try:
+        await safe_edit(
+            callback.message,
+            text=text,
+            reply_markup=get_examples_keyboard(),
+        )
+    except TelegramBadRequest:
+        # Если исходное сообщение удалено или не может быть отредактировано — отправляем новое
+        await callback.message.answer(text, reply_markup=get_examples_keyboard())
     log_button(callback, text)
-    # При необходимости можно отправить изображения/видео отдельными сообщениями
-    await callback.message.answer(
-        "• Магазин-бот – t.me/example_shop_bot\n"
-        "• Бронирование – t.me/example_booking_bot\n",
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Кейсы
+# ---------------------------------------------------------------------------
+
+
+@router.callback_query(lambda c: c.data == "case_shop")
+async def case_shop(callback: types.CallbackQuery) -> None:
+    """Карточка кейса «Магазин-бот»"""
+    text = (
+        "<b>🛒 Магазин-бот</b>\n\n"
+        "• Быстрый старт продаж прямо в Telegram\n"
+        "• Каталог товаров, корзина и оплата в несколько кликов\n"
+        "• Уведомления менеджеру и клиенту\n"
     )
-    await callback.message.answer("Вернуться в меню:", reply_markup=get_navigation_menu(await get_coupon(callback.from_user.id)))
+
+    # Отправляем индикатор загрузки
+    loading = await callback.message.answer("⏳ Идёт загрузка кейса...")
+    # Сбрасываем список медиа для последующего удаления
+    case_media_store[callback.from_user.id] = []
+    # Удаляем исходное сообщение с меню
+    await callback.message.delete()
+
+    # Отправляем фото и видео в одном альбоме и записываем их IDs
+    media = [
+        InputMediaPhoto(media=FSInputFile("media/shop.png")),
+        InputMediaVideo(media=FSInputFile("media/shop.mp4")),
+    ]
+    # Отправляем фото и видео в одном альбоме с таймаутом
+    try:
+        media_messages = await asyncio.wait_for(
+            callback.message.answer_media_group(media),
+            timeout=10,
+        )
+        case_media_store[callback.from_user.id] = media_messages
+    except Exception:
+        # При ошибке отправки медиа показываем описание кейса без медиа
+        await loading.delete()
+        err_msg = await callback.message.answer("❌ не удалось загрузить медиаматериалы по кейсу")
+        desc_msg = await callback.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_case_keyboard(bot_url="https://t.me/example_shop_bot"),
+        )
+        case_media_store[callback.from_user.id] = [err_msg, desc_msg]
+        log_button(callback, "case_shop")
+        await callback.answer()
+        return
+
+    # Удаляем индикатор загрузки после небольшой задержки
+    await asyncio.sleep(1)
+    await loading.delete()
+
+    # Отправляем карточку с описанием и кнопкой под медиа
+    await callback.message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_case_keyboard(bot_url="https://t.me/example_shop_bot"),
+    )
+    log_button(callback, "case_shop")
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "case_booking")
+async def case_booking(callback: types.CallbackQuery) -> None:
+    """Карточка кейса «Бронирование»"""
+    text = (
+        "<b>📆 Бронирование</b>\n\n"
+        "• Онлайн-запись на услуги и мероприятия\n"
+        "• Свободные окна, напоминания клиенту\n"
+    )
+
+    # Отправляем индикатор загрузки
+    loading = await callback.message.answer("⏳ Идёт загрузка кейса...")
+    case_media_store[callback.from_user.id] = []
+    # Удаляем исходное сообщение с меню
+    await callback.message.delete()
+
+    # Отправляем фото и видео в одном альбоме
+    media = [
+        InputMediaPhoto(media=FSInputFile("media/booking.jpg")),
+        InputMediaVideo(media=FSInputFile("media/booking.mp4")),
+    ]
+    try:
+        media_messages = await asyncio.wait_for(
+            callback.message.answer_media_group(media),
+            timeout=10,
+        )
+        case_media_store[callback.from_user.id] = media_messages
+    except Exception:
+        # При ошибке отправки медиа показываем описание кейса без медиа
+        await loading.delete()
+        err_msg = await callback.message.answer("❌ не удалось загрузить медиаматериалы по кейсу")
+        desc_msg = await callback.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_case_keyboard(bot_url="https://t.me/example_booking_bot"),
+        )
+        case_media_store[callback.from_user.id] = [err_msg, desc_msg]
+        log_button(callback, "case_booking")
+        await callback.answer()
+        return
+
+    await asyncio.sleep(1)
+    await loading.delete()
+
+    # Отправляем карточку с описанием и кнопкой под медиа
+    await callback.message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_case_keyboard(bot_url="https://t.me/example_booking_bot"),
+    )
+    log_button(callback, "case_booking")
     await callback.answer()
 
 @router.callback_query(lambda c: c.data == "calc_cost")
@@ -362,8 +497,8 @@ async def category_chosen(callback: types.CallbackQuery, state: FSMContext) -> N
         await state.update_data(template="builder", modules=[])
         await state.set_state(States.choose_modules)
         modules_intro = (
-            "Шаг 2/3. Выберите необходимые модули (можно несколько):\n"
-            "<i>* Стоимость модулей включает надбавку 20 % и округлена до 1 000 ₽</i>"
+            "Шаг 2/3. Выберите необходимые модули:\n"
+            "<i>*Итоговая стоимость может отличаться от предварительной!</i>"
         )
         await safe_edit(
             callback.message,
@@ -516,7 +651,7 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
     await state.update_data(support=callback.data)
     data = await state.get_data()
     if data["template"] == "builder":
-        mod_total = sum((((MODULES[m]["price"] * 1.2 + 999) // 1000) * 1000) for m in data["modules"])
+        mod_total = sum((((MODULES[m]["price"] * 1.25 + 999) // 1000) * 1000) for m in data["modules"])
         total = mod_total + SUPPORT_PACKAGES[data["support"]]["price"]
     else:
         total = calculate_total(
@@ -552,7 +687,7 @@ async def support_chosen(callback: types.CallbackQuery, state: FSMContext) -> No
         for m in data["modules"]:
             price = MODULES[m]["price"]
             if data.get("template") == "builder":
-                price = ((int(price * 1.2 + 999)) // 1000) * 1000
+                price = ((int(price * 1.25 + 999)) // 1000) * 1000
             modules_lines.append(f"{MODULE_EMOJIS.get(m, '🧩')} {MODULES[m]['name']} — {_fmt_price(price)} ₽")
         modules_block = "\n".join(modules_lines)
     else:

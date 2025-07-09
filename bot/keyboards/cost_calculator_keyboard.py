@@ -53,15 +53,15 @@ TEMPLATE_EMOJIS = {
 # Эмодзи для пакетов поддержки
 SUPPORT_EMOJIS = {
     "no_support": "🚫",
-    "support_6": "��️",
-    "support_12": "🛡️",
+    "support_6": "🔄",
+    "support_12": "🤝",
 }
 
 
 def get_category_keyboard() -> InlineKeyboardMarkup:
     categories = [
         ("all", "🗂️ Показать всё"),
-        ("builder", "🧩 Собрать помодульно"),
+        ("builder", "🧩 Собрать из модулей"),
         ("services", "💼 Предоставление услуг (Эксперт)"),
         ("sales", "🛒 Продажи (мероприятия, курсы, товары)"),
     ]
@@ -117,7 +117,7 @@ def get_modules_keyboard(*, selected: List[str], template_key: str) -> InlineKey
         emoji = MODULE_EMOJIS.get(key, "🧩")
         price = module["price"]
         if template_key == "builder":
-            price = ((int(price * 1.2 + 999)) // 1000) * 1000  # 20% и округление вверх до 1000
+            price = ((int(price * 1.25 + 999)) // 1000) * 1000  # 25% и округление вверх до 1000
         keyboard.append([
             InlineKeyboardButton(text=f"{prefix}{emoji} {module['name']} (+{_fmt_price(price)} ₽)", callback_data=key)
         ])
