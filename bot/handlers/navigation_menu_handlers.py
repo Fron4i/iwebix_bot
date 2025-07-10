@@ -325,8 +325,7 @@ async def show_examples(callback: types.CallbackQuery) -> None:
             pass
     case_media_store[callback.from_user.id] = []
     text = (
-        "Ниже несколько демонстрационных проектов. Выберите интересующий кейс, "
-        "чтобы увидеть подробности, фотографии/видео и ссылку на демо-бота."
+        "Выберите интересующий вас демонстрационный проект: \n\n(дальше - больше !)"
     )
     try:
         await safe_edit(
@@ -348,12 +347,29 @@ async def show_examples(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(lambda c: c.data == "case_shop")
 async def case_shop(callback: types.CallbackQuery) -> None:
-    """Карточка кейса «Магазин-бот»"""
+    """Карточка кейса «Инфо-бот продажи билетов"""
     text = (
-        "<b>🛒 Магазин-бот</b>\n\n"
-        "• Быстрый старт продаж прямо в Telegram\n"
-        "• Каталог товаров, корзина и оплата в несколько кликов\n"
-        "• Уведомления менеджеру и клиенту\n"
+        "<b>🎟️ Инфо-бот продажи билетов на мероприятие</b>"
+        "<i> - автоматизирует информирование и <b>продажу билетов</b></i>\n\n"
+        "<b>Что он умеет?</b>\n"
+        "👋 Приветствие с медиа-обложкой\n"
+        "📞 Сбор контакта пользователя\n"
+        "🗂 Удобное меню с тремя разделами:\n"
+        "  — <b><i>О мероприятии:</i></b> основная информация\n"
+        "  — <b><i>FAQ:</i></b> быстрые ответы на вопросы\n"
+        "  — <b><i>Купить билет:</i></b> выбор тарифа и его описание, инструкция по оплате\n\n"
+        "💳 После оплаты <b>бот принимает скрин, уведомляет админов, присылает пользователю статус подтверждения</b>\n"
+        "📲 Статус оплаты доступен в любое время.\n\n"
+        "<b>Протестировать функционал бота и его админ группы:</b>"
+    )
+
+    # Клавиатура с дополнительными ссылками
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Открыть бота", url="https://t.me/info_and_checking_payments_bot")],
+            [InlineKeyboardButton(text="👥 Админ-группа", url="https://t.me/info_and_checking_payments_admin")],
+            [InlineKeyboardButton(text="↩️ К списку", callback_data="examples")],
+        ]
     )
 
     # Отправляем индикатор загрузки
@@ -365,7 +381,8 @@ async def case_shop(callback: types.CallbackQuery) -> None:
 
     # Отправляем фото и видео в одном альбоме и записываем их IDs
     media = [
-        InputMediaPhoto(media=FSInputFile("media/shop.png")),
+        InputMediaPhoto(media=FSInputFile("media/shop1.png")),
+        InputMediaPhoto(media=FSInputFile("media/shop2.png")),
         InputMediaVideo(media=FSInputFile("media/shop.mp4")),
     ]
     # Отправляем фото и видео в одном альбоме с таймаутом
@@ -382,7 +399,7 @@ async def case_shop(callback: types.CallbackQuery) -> None:
         desc_msg = await callback.message.answer(
             text,
             parse_mode="HTML",
-            reply_markup=get_case_keyboard(bot_url="https://t.me/example_shop_bot"),
+            reply_markup=keyboard,
         )
         case_media_store[callback.from_user.id] = [err_msg, desc_msg]
         log_button(callback, "case_shop")
@@ -397,13 +414,13 @@ async def case_shop(callback: types.CallbackQuery) -> None:
     await callback.message.answer(
         text,
         parse_mode="HTML",
-        reply_markup=get_case_keyboard(bot_url="https://t.me/example_shop_bot"),
+        reply_markup=keyboard,
     )
     log_button(callback, "case_shop")
     await callback.answer()
 
 
-@router.callback_query(lambda c: c.data == "case_booking")
+# @router.callback_query(lambda c: c.data == "case_booking")
 async def case_booking(callback: types.CallbackQuery) -> None:
     """Карточка кейса «Бронирование»"""
     text = (

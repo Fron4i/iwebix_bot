@@ -9,8 +9,8 @@ __all__ = [
 def get_examples_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура списка демонстрационных проектов."""
     buttons = [
-        [InlineKeyboardButton(text="🛒 Магазин-бот", callback_data="case_shop")],
-        [InlineKeyboardButton(text="📆 Бронирование", callback_data="case_booking")],
+        [InlineKeyboardButton(text="🎟 Инфо-бот продажи билетов", callback_data="case_shop")],
+        # [InlineKeyboardButton(text="📆 Бронирование", callback_data="case_booking")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="back_menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
